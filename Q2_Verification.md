@@ -35,45 +35,155 @@ module blk_mem_gen_0 (
         endcase
     end
 endmodule
-```
+```## 2. כללי הברזל לכתיבת Testbench
+* **כלל ה-reg וה-wire ב-Testbench:**
+  * כניסות ל-DUT (הקופסה הנבדקת) מוגדרות כ-`reg` (כי אנחנו מייצרים/דוחפים להן ערכים).
+  * יציאות מה-DUT מוגדרות כ-`wire` (כי אנחנו רק קוראים מהן).
+* **עץ ההחלטות (איזו שבלונה לבחור במבחן?):**
+  * **האם יש ל-DUT סיגנלי `start` ו-`ready`?**
+    * **כן:** המערכת סדרתית ולוקח לה זמן לחשב. **-> בחר בשבלונה 3ב (עם FSM).**
+    * **לא:** המערכת קומבינטורית (כמו SBOX או מודול Loop Unrolled). **-> בחר בשבלונה 3א (קריאה רציפה).**
 
 ---
 
-## 3. שבלונת Testbench - קריאה מורכבת מקבצים
-כאשר נדרש לכתוב סביבת בדיקה מלאה (ולא Stub) שקוראת מפתח וסיגנלים נכנסים מתוך קובץ (כמו במבחן 23b), נשתמש במנגנון הבא:
+## 3א. שבלונת Testbench למערכת קומבינטורית (ללא start/ready)
+**שימוש:** כאשר ה-DUT מחזיר תשובה באופן מיידי ללא עיכוב של עשרות שעונים וללא סיגנלי בקרה. (דוגמה: SBOX או Key Schedule במוד Loop Unrolled).
 
 ```verilog
 `timescale 1ns/1ps
 `default_nettype none
 
-// ב-TB אין צורך בפורטים (Ports)
-module tb_top();
+module tb_combinatorial();
 
-    integer key_check_file;
-    integer statusk;
-    reg [63:0] key;
-    reg [47:0] rk1, rk2, rk3;
+    integer data_file_in;
+    integer statusD;
 
+    // 1. הגדרת סיגנלים (יש להתאים רוחב לפי השרטוט בשאלה!)
+    reg  [55:0]  key_in;
+    reg  [767:0] ref_out;     // התוצאה הצפויה מהקובץ
+    wire [767:0] actual_out;  // התוצאה בפועל מהמודול
+
+    // 2. מחולל שעון
+    reg clk = 0;
+    always #10 clk = ~clk;
+
+    // 3. תהליך הבדיקה המרכזי
     initial begin
-        key_check_file = $fopen("key_check_file.txt", "r"); // פתיחה לקריאה
+        data_file_in = $fopen("test_vectors.txt", "r"); // התאם שם קובץ
     end
 
+    // קריאה מהקובץ בעליית שעון
     always @(posedge clk) begin
-        if (load) begin
-            // קריאת המשתנים מהקובץ, %h כמספר המשתנים.
-            statusk = $fscanf(key_check_file, "%h %h %h %h\n", key, rk1, rk2, rk3);
-            
-            #1; // השהיית סימולציה קלה כדי שהערכים מהקובץ יתעדכנו
-
-            // בדיקה והדפסה במקרה של שגיאה מול התכנון האמיתי (dut)
-            if (rk1 != dut.k1)
-                $display("Wrong subkey k1: %h instead %h\n", rk1, dut.k1);
+        if (!$feof(data_file_in)) begin
+            // התאם את ה-%h לפי כמות המשתנים בשורה
+            statusD = $fscanf(data_file_in, "%h %h\n", key_in, ref_out);
+        end else begin
+            $fclose(data_file_in);
+            #100 $finish;
         end
     end
+
+    // מוניטור ההשוואה (רץ מיד עם קריאת הנתון)
+    always @(posedge clk) begin
+        if (actual_out == ref_out)
+            $display("Time=%8t | Out=%h | PASS\n", $time, actual_out);
+        else
+            $display("Time=%8t | Out=%h | Expected=%h | FAIL\n", $time, actual_out, ref_out);
+    end
+
+    // 4. מופע הרכיב (DUT)
+    target_module_name dut_inst (
+        .key(key_in),
+        .k_out(actual_out)
+    );
 
 endmodule
 ```
 
+---
+
+## 3ב. שבלונת Testbench למערכת סדרתית (מודל FSM של שטרו)
+**שימוש:** כאשר המערכת דורשת פרוטוקול "לחיצת יד" (Handshake) - מתן פולס `start` והמתנה לעליית סיגנל ה-`ready`.
+
+```verilog
+`timescale 1ns/1ps
+`default_nettype none
+
+module tb_sequential_fsm();
+
+    // 1. מצבי מכונת הבדיקה
+    localparam IDLE     = 2'b00;
+    localparam START    = 2'b01;
+    localparam WAIT4RDY = 2'b10;
+
+    reg [1:0] state;
+    integer data_file_in, statusD;
+
+    // 2. סיגנלים (להתאים לפי השאלה!)
+    reg  clk = 0, reset = 0, start = 0;
+    reg  [127:0] plaintext, key, ref_out;
+    wire [127:0] ciphertext;
+    wire ready;
+
+    always #10 clk = ~clk;
+
+    initial begin
+        reset = 1; #50; reset = 0;
+        data_file_in = $fopen("test_vectors.txt", "r");
+    end
+
+    // 3. הזרקת נתונים וניהול start/ready
+    always @(posedge clk) begin
+        if (reset) begin
+            state <= IDLE;
+            start <= 1'b0;
+        end else begin
+            case (state)
+                IDLE: begin
+                    state <= START;
+                    start <= 1'b1; // פולס התחלה
+                end
+                START: begin
+                    state <= WAIT4RDY;
+                    start <= 1'b0; // הורדת הפולס
+
+                    if (!$feof(data_file_in)) begin
+                        statusD = $fscanf(data_file_in, "%h %h %h\n", key, plaintext, ref_out);
+                    end else begin
+                        $fclose(data_file_in);
+                        $finish;
+                    end
+                end
+                WAIT4RDY: begin
+                    if (ready == 1'b1) begin
+                        state <= START; // מתחילים סבב חדש כשהרכיב מוכן
+                        start <= 1'b1;
+                    end else begin
+                        state <= WAIT4RDY;
+                        start <= 1'b0;
+                    end
+                end
+            endcase
+        end
+    end
+
+    // 4. מוניטור ההשוואה (הטריק: מתבצע רק כש-ready עולה!)
+    always @(posedge ready) begin
+        if (ciphertext == ref_out)
+            $display("Time=%0t | Out=%032h | PASS", $time, ciphertext);
+        else
+            $display("Time=%0t | Out=%032h | FAIL", $time, ciphertext);
+    end
+
+    // 5. מופע ה-DUT
+    crypto_module_name dut_inst (
+        .clk(clk), .reset(reset), .start(start),
+        .key(key), .data_in(plaintext),
+        .data_out(ciphertext), .ready(ready)
+    );
+
+endmodule
+```
 ---
 
 ## 4. התבנית האולטימטיבית ל-Stub עם השהיות אלגוריתמיות (File I/O)
