@@ -35,7 +35,7 @@ module blk_mem_gen_0 (
         endcase
     end
 endmodule
-```## 2. כללי הברזל לכתיבת Testbench
+## 2. כללי הברזל לכתיבת Testbench
 * **כלל ה-reg וה-wire ב-Testbench:**
   * כניסות ל-DUT (הקופסה הנבדקת) מוגדרות כ-`reg` (כי אנחנו מייצרים/דוחפים להן ערכים).
   * יציאות מה-DUT מוגדרות כ-`wire` (כי אנחנו רק קוראים מהן).
